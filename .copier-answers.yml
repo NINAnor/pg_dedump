@@ -1,0 +1,14 @@
+# Changes here will be overwritten by Copier
+_commit: v0.0.1
+_src_path: gh:ninanor/python-template
+author_name: nicokant
+debug: false
+default_branch_name: main
+docker: false
+email: niccolo.cantu@nina.no
+project_name: PGDedump
+project_slug: pg_dedump
+repo_name: pg_dedump
+repo_org: ninanor
+template_type: python
+type_annotations: false
