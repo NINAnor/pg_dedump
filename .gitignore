@@ -179,3 +179,4 @@ nina-python-init.py
 
 *.db
 *.parquet
+*.wal

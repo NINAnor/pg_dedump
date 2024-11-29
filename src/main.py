@@ -5,6 +5,7 @@ import pathlib
 from collections import OrderedDict
 
 import duckdb
+import pyarrow as pa
 import sqlglot
 import sqlglot.expressions
 from tqdm import tqdm
@@ -25,7 +26,9 @@ def convert(value: str, dtype: sqlglot.expressions.DataType.Type):
 
 
 def get_typed_values(row, schema):
-    return tuple(convert(value=value, dtype=schema[key]) for key, value in row.items())
+    return OrderedDict(
+        (key, convert(value=value, dtype=schema[key])) for key, value in row.items()
+    )
 
 
 def get_typed_insert_query(table, values, columns):
@@ -80,14 +83,13 @@ def handle_copy(
             entries.append(values)
 
             if len(entries) == chunks:
-                query = get_typed_insert_query(
-                    table=table, values=entries, columns=columns
-                )
-                connection.sql(query)
-                set_processed_line(connection, line_nr)
+                arrow_table = pa.Table.from_pylist(entries)
                 entries = []
-
-                logging.debug(connection.sql("FROM duckdb_memory();"))
+                connection.register(f"_temp_{table}", arrow_table)
+                connection.sql(f"insert into {table} from _temp_{table}")
+                connection.unregister(f"_temp_{table}")
+                arrow_table = None
+                set_processed_line(connection, line_nr)
         else:
             logging.debug(f"skipping {line_nr}")
 
@@ -96,9 +98,13 @@ def handle_copy(
         progress.update(1)
 
     if entries:
-        query = get_typed_insert_query(table=table, values=entries, columns=columns)
-        logging.debug(query)
-        connection.sql(query)
+        arrow_table = pa.Table.from_pylist(entries)
+        entries = []
+        connection.register(f"_temp_{table}", arrow_table)
+        connection.sql(f"insert into {table} from _temp_{table}")
+        connection.unregister(f"_temp_{table}")
+        arrow_table = None
+        set_processed_line(connection, line_nr)
 
     return line_nr
 
