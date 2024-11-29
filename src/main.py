@@ -138,7 +138,9 @@ def get_last_processed_line(connection):
     return processed_line
 
 
-def start(*args, chunks, db, output_type, files, drop_db, total, **kwargs) -> None:
+def start(
+    *args, chunks, db, output_type, files, drop_db, total, output, prefix, **kwargs
+) -> None:
     if drop_db:
         pathlib.Path(db).unlink(missing_ok=True)
 
@@ -180,8 +182,9 @@ def start(*args, chunks, db, output_type, files, drop_db, total, **kwargs) -> No
 
     with duckdb.connect(db) as connection:
         for table in TABLE_REGISTRY.keys():
+            output_path = pathlib.Path(output) / f"{prefix}{table}"
             if output_type == "parquet" or db == ":memory:":
-                connection.sql(f"from {table}").write_parquet(f"{table}.parquet")
+                connection.sql(f"from {table}").write_parquet(f"{output_path}.parquet")
             else:
                 raise Exception("output format not supported")
 
@@ -223,7 +226,20 @@ def cli():
         required=False,
     )
     parser.add_argument(
-        "-f",
+        "-p",
+        "--prefix",
+        default="",
+        help="Prefix to add to each table exported",
+        required=False,
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        default="",
+        help="Output path",
+        required=False,
+    )
+    parser.add_argument(
         "--output-type",
         default="parquet",
         help="Format of the tables output",
