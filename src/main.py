@@ -181,7 +181,7 @@ def start(
     with duckdb.connect(db) as connection:
         for table in TABLE_REGISTRY.keys():
             output_path = pathlib.Path(output) / f"{prefix}{table}"
-            if output_type == "parquet" or db == ":memory:":
+            if output_type == "parquet":
                 connection.sql(f"from {table}").write_parquet(f"{output_path}.parquet")
             else:
                 raise Exception("output format not supported")
@@ -199,28 +199,32 @@ def cli():
         nargs="*",
         help="files to read, if empty, stdin is used",
     )
-    parser.add_argument("-v", "--verbose", action="store_true")
-    parser.add_argument("-r", "--drop-db", action="store_true")
+    parser.add_argument(
+        "-v", "--verbose", action="store_true", help="Print debug output"
+    )
+    parser.add_argument(
+        "-r", "--drop-db", action="store_true", help="Delete the database if present"
+    )
     parser.add_argument(
         "-c",
         "--chunks",
         type=int,
         default=10000,
-        help="Chunk insert size",
+        help="Chunk insert size - default: 10000",
         required=False,
     )
     parser.add_argument(
         "-t",
         "--total",
         type=int,
-        help="Total lines",
+        help="Total lines - enables the progress bar",
         required=False,
     )
     parser.add_argument(
         "-d",
         "--db",
-        default=":memory:",
-        help="Name of the dump database",
+        default="dump.ddb",
+        help="Name of the dump database - by default uses dump.ddb",
         required=False,
     )
     parser.add_argument(
@@ -240,7 +244,7 @@ def cli():
     parser.add_argument(
         "--output-type",
         default="parquet",
-        help="Format of the tables output",
+        help="Format of the tables output - default: parquet",
         required=False,
     )
     args = parser.parse_args()
