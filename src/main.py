@@ -41,10 +41,11 @@ def get_typed_insert_query(table, values, columns):
     )
 
 
-def handle_create(statement, connection):
+def handle_create(statement, db):
     create_query = remove_schema(statement)
     table_name = create_query.this.this.this.this
-    connection.sql(create_query.sql(dialect="duckdb"))
+    with duckdb.connect(db) as connection:
+        connection.sql(create_query.sql(dialect="duckdb"))
 
     logging.debug(repr(create_query))
 
@@ -55,10 +56,21 @@ def handle_create(statement, connection):
     return table_name, schema
 
 
+def process_chunk(db, chunk, table, line_nr):
+    logging.debug(f"processing chunk up to {line_nr}")
+
+    arrow_table = pa.Table.from_pylist(chunk)
+    with duckdb.connect(db) as connection:
+        connection.register(f"_temp_{table}", arrow_table)
+        connection.sql(f"insert into {table} from _temp_{table}")
+        connection.unregister(f"_temp_{table}")
+        set_processed_line(connection, line_nr)
+
+
 def handle_copy(
     statement: sqlglot.Expression,
     stream,
-    connection,
+    db,
     table,
     schema,
     chunks: int,
@@ -72,10 +84,12 @@ def handle_copy(
 
     line = next(stream).rstrip()
 
-    last_line_nr = get_last_processed_line(connection)
+    with duckdb.connect(db) as connection:
+        last_line_nr = get_last_processed_line(connection)
 
     while line != r"\.":
         if line_nr > last_line_nr:
+            logging.debug(f"adding {line_nr}")
             values = get_typed_values(
                 OrderedDict(zip(columns, line.rstrip().split("\t"), strict=False)),
                 schema,
@@ -83,13 +97,8 @@ def handle_copy(
             entries.append(values)
 
             if len(entries) == chunks:
-                arrow_table = pa.Table.from_pylist(entries)
+                process_chunk(db, chunk=entries, table=table, line_nr=line_nr)
                 entries = []
-                connection.register(f"_temp_{table}", arrow_table)
-                connection.sql(f"insert into {table} from _temp_{table}")
-                connection.unregister(f"_temp_{table}")
-                arrow_table = None
-                set_processed_line(connection, line_nr)
         else:
             logging.debug(f"skipping {line_nr}")
 
@@ -97,14 +106,8 @@ def handle_copy(
         line_nr += 1
         progress.update(1)
 
-    if entries:
-        arrow_table = pa.Table.from_pylist(entries)
-        entries = []
-        connection.register(f"_temp_{table}", arrow_table)
-        connection.sql(f"insert into {table} from _temp_{table}")
-        connection.unregister(f"_temp_{table}")
-        arrow_table = None
-        set_processed_line(connection, line_nr)
+    if len(entries) > 0:
+        process_chunk(db, chunk=entries, table=table, line_nr=line_nr)
 
     return line_nr
 
@@ -138,15 +141,16 @@ def get_last_processed_line(connection):
 def start(*args, chunks, db, output_type, files, drop_db, total, **kwargs) -> None:
     if drop_db:
         pathlib.Path(db).unlink(missing_ok=True)
-    connection = duckdb.connect(db)
+
     TABLE_REGISTRY = {}
 
-    connection.sql("""
-        create schema if not exists _stats;
-        create table if not exists _stats.processed_line as (
-            select 0 as line_nr
-        )
-    """)
+    with duckdb.connect(db) as connection:
+        connection.sql("""
+            create schema if not exists _stats;
+            create table if not exists _stats.processed_line as (
+                select 0 as line_nr
+            )
+        """)
 
     tqdm_params = {}
     if total:
@@ -158,7 +162,7 @@ def start(*args, chunks, db, output_type, files, drop_db, total, **kwargs) -> No
         progress = tqdm(unit=" lines", **tqdm_params)
         for statement, index in sql_parsing_iterator(stream, progress):
             if statement.key == "create":
-                table, schema = handle_create(statement, connection)
+                table, schema = handle_create(statement, db)
                 TABLE_REGISTRY[table] = schema
             elif statement.key == "copy":
                 table = statement.this.this.this.this
@@ -166,7 +170,7 @@ def start(*args, chunks, db, output_type, files, drop_db, total, **kwargs) -> No
                 handle_copy(
                     statement,
                     stream,
-                    connection,
+                    db,
                     table,
                     schema,
                     chunks=chunks,
@@ -174,13 +178,12 @@ def start(*args, chunks, db, output_type, files, drop_db, total, **kwargs) -> No
                     progress=progress,
                 )
 
-    for table in TABLE_REGISTRY.keys():
-        if output_type == "parquet" or db == ":memory:":
-            connection.sql(f"from {table}").write_parquet(f"{table}.parquet")
-        else:
-            raise Exception("output format not supported")
-
-    connection.close()
+    with duckdb.connect(db) as connection:
+        for table in TABLE_REGISTRY.keys():
+            if output_type == "parquet" or db == ":memory:":
+                connection.sql(f"from {table}").write_parquet(f"{table}.parquet")
+            else:
+                raise Exception("output format not supported")
 
 
 def cli():
