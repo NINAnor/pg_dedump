@@ -16,11 +16,6 @@ in pkgs.mkShell rec {
     # This executes some shell code to initialize a venv in $venvDir before
     # dropping into the shell
     pythonPackages.venvShellHook
-    pythonPackages.django-environ
-    pythonPackages.click
-
-    python312Packages.duckdb
-    unstable.gdal
     unstable.duckdb
   ];
 
