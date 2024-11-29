@@ -12,8 +12,6 @@ from tqdm import tqdm
 
 from helpers import get_sql_block, remove_schema
 
-DEBUG = False
-
 
 def convert(value: str, dtype: sqlglot.expressions.DataType.Type):
     if value == "\\N":
