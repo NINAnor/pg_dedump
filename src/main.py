@@ -1,16 +1,17 @@
+import argparse
 import fileinput
 import logging
+import pathlib
 from collections import OrderedDict
 
 import duckdb
 import sqlglot
 import sqlglot.expressions
+from tqdm import tqdm
 
 from helpers import get_sql_block, remove_schema
 
 DEBUG = False
-
-logging.basicConfig(level=(logging.DEBUG if DEBUG else logging.INFO))
 
 
 def convert(value: str, dtype: sqlglot.expressions.DataType.Type):
@@ -52,65 +53,177 @@ def handle_create(statement, connection):
 
 
 def handle_copy(
-    statement: sqlglot.Expression, stream, connection, table, schema, chunks: int
+    statement: sqlglot.Expression,
+    stream,
+    connection,
+    table,
+    schema,
+    chunks: int,
+    index: int,
+    progress: tqdm,
 ):
     columns = [i.this for i in statement.this.expressions]
     entries = []
-    connection.sql("begin;")
+
+    line_nr = index
 
     line = next(stream).rstrip()
 
-    while line != r"\.":
-        row = OrderedDict(zip(columns, line.rstrip().split("\t"), strict=False))
-        values = get_typed_values(row, schema)
-        entries.append(values)
+    last_line_nr = get_last_processed_line(connection)
 
-        if len(entries) == chunks:
-            query = get_typed_insert_query(table=table, values=entries, columns=columns)
-            logging.debug(query)
-            connection.sql(query)
-            entries = []
+    while line != r"\.":
+        if line_nr > last_line_nr:
+            values = get_typed_values(
+                OrderedDict(zip(columns, line.rstrip().split("\t"), strict=False)),
+                schema,
+            )
+            entries.append(values)
+
+            if len(entries) == chunks:
+                query = get_typed_insert_query(
+                    table=table, values=entries, columns=columns
+                )
+                connection.sql(query)
+                set_processed_line(connection, line_nr)
+                entries = []
+
+                logging.debug(connection.sql("FROM duckdb_memory();"))
+        else:
+            logging.debug(f"skipping {line_nr}")
 
         line = next(stream).rstrip()
+        line_nr += 1
+        progress.update(1)
 
     if entries:
         query = get_typed_insert_query(table=table, values=entries, columns=columns)
         logging.debug(query)
         connection.sql(query)
-    connection.sql("commit;")
+
+    return line_nr
 
 
-def sql_parsing_iterator(stream):
-    for _block in get_sql_block(stream):
+def sql_parsing_iterator(stream, progress):
+    for _block, index in get_sql_block(stream, progress):
         parsed = sqlglot.parse_one(_block)
 
         if parsed.key in [
             "create",
             "copy",
         ]:
-            yield parsed
+            yield parsed, index
 
 
-def start() -> None:
-    connection = duckdb.connect()
-    chunks = 100000
+def set_processed_line(connection, line_nr):
+    connection.sql(
+        sqlglot.expressions.update("_stats.processed_line", {"line_nr": line_nr}).sql(
+            dialect="duckdb"
+        )
+    )
+
+
+def get_last_processed_line(connection):
+    (processed_line,) = connection.sql(
+        "select line_nr from _stats.processed_line limit 1"
+    ).fetchone()
+    return processed_line
+
+
+def start(*args, chunks, db, output_type, files, drop_db, total, **kwargs) -> None:
+    if drop_db:
+        pathlib.Path(db).unlink(missing_ok=True)
+    connection = duckdb.connect(db)
     TABLE_REGISTRY = {}
 
-    with fileinput.input(encoding="utf-8") as f:
-        for statement in sql_parsing_iterator(f):
+    connection.sql("""
+        create schema if not exists _stats;
+        create table if not exists _stats.processed_line as (
+            select 0 as line_nr
+        )
+    """)
+
+    tqdm_params = {}
+    if total:
+        tqdm_params["total"] = total
+
+    with fileinput.input(
+        files=files if len(files) > 0 else ("-",), encoding="utf-8"
+    ) as stream:
+        progress = tqdm(unit=" lines", **tqdm_params)
+        for statement, index in sql_parsing_iterator(stream, progress):
             if statement.key == "create":
                 table, schema = handle_create(statement, connection)
                 TABLE_REGISTRY[table] = schema
             elif statement.key == "copy":
                 table = statement.this.this.this.this
                 schema = TABLE_REGISTRY[table]
-                handle_copy(statement, f, connection, table, schema, chunks=chunks)
+                handle_copy(
+                    statement,
+                    stream,
+                    connection,
+                    table,
+                    schema,
+                    chunks=chunks,
+                    index=index,
+                    progress=progress,
+                )
 
     for table in TABLE_REGISTRY.keys():
-        connection.sql(f"from {table}").write_parquet(f"{table}.parquet")
+        if output_type == "parquet" or db == ":memory:":
+            connection.sql(f"from {table}").write_parquet(f"{table}.parquet")
+        else:
+            raise Exception("output format not supported")
 
     connection.close()
 
 
+def cli():
+    parser = argparse.ArgumentParser(
+        prog="pg_dedump",
+        description="extract tables from postgres dumps",
+        add_help=True,
+    )
+    parser.add_argument(
+        "files",
+        metavar="FILE",
+        nargs="*",
+        help="files to read, if empty, stdin is used",
+    )
+    parser.add_argument("-v", "--verbose", action="store_true")
+    parser.add_argument("-r", "--drop-db", action="store_true")
+    parser.add_argument(
+        "-c",
+        "--chunks",
+        type=int,
+        default=10000,
+        help="Chunk insert size",
+        required=False,
+    )
+    parser.add_argument(
+        "-t",
+        "--total",
+        type=int,
+        help="Total lines",
+        required=False,
+    )
+    parser.add_argument(
+        "-d",
+        "--db",
+        default=":memory:",
+        help="Name of the dump database",
+        required=False,
+    )
+    parser.add_argument(
+        "-f",
+        "--output-type",
+        default="parquet",
+        help="Format of the tables output",
+        required=False,
+    )
+    args = parser.parse_args()
+    logging.basicConfig(level=(logging.DEBUG if args.verbose else logging.INFO))
+    start(**vars(args))
+
+
 if __name__ == "__main__":
-    start()
+    cli()

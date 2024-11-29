@@ -1,19 +1,23 @@
 import sqlglot
+import sqlglot.expressions
 
 
-def get_sql_block(input):  # noqa: A002
+def get_sql_block(input, progress):  # noqa: A002
     text_block = ""
-    for line in input:
+    for index, line in enumerate(input):
+        progress.update(1)
         if line.lstrip().startswith("--"):
             continue
         text_block += line.rstrip()
         if text_block.endswith(";"):
-            yield text_block
+            yield text_block, index
             text_block = ""
 
 
 def remove_schema(expression):
     def transformer(node):
+        if isinstance(node, sqlglot.expressions.Create):
+            node.args["exists"] = True
         if node.key == "table":
             del node.args["db"]
         if (

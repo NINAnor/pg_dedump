@@ -6,7 +6,8 @@ authors = [
 # See https://www.python.org/dev/peps/pep-0621/
 dependencies = [
   "sqlglot",
-  "duckdb"
+  "duckdb",
+  "tqdm"
 ]
 description = ""
 license = {text = "GPL-3.0+"}
@@ -23,7 +24,7 @@ tools = [
 ]
 
 [project.scripts]
-"pg_dedump" = "main:start"
+"pg_dedump" = "main:cli"
 
 [tool.ruff]
 fix = true
