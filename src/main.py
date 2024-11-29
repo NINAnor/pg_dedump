@@ -1,36 +1,40 @@
 import fileinput
 import logging
-import pathlib
 from collections import OrderedDict
 
 import duckdb
-import environ
 import sqlglot
 import sqlglot.expressions
 
 from helpers import get_sql_block, remove_schema
 
-env = environ.Env()
-BASE_DIR = pathlib.Path(__file__).parent.parent
-environ.Env.read_env(str(BASE_DIR / ".env"))
-
-DEBUG = env.bool("DEBUG", default=False)
+DEBUG = False
 
 logging.basicConfig(level=(logging.DEBUG if DEBUG else logging.INFO))
 
 
+def convert(value: str, dtype: sqlglot.expressions.DataType.Type):
+    if value == "\\N":
+        return None
+
+    if dtype.this == sqlglot.expressions.DataType.Type.ARRAY:
+        return value[1:-1].split(",")
+
+    return value
+
+
 def get_typed_values(row, schema):
-    # TODO: handle complex data types
-    return tuple(v if v != "\\N" else None for v in row.values())
+    return tuple(convert(value=value, dtype=schema[key]) for key, value in row.items())
 
 
-def get_typed_insert_query(table, row, schema):
+def get_typed_insert_query(table, values, columns):
     return sqlglot.insert(
         into=table,
+        columns=columns,
+        expression=sqlglot.expressions.values([*values]),
+    ).sql(
         dialect="duckdb",
-        columns=schema.keys(),
-        expression=sqlglot.expressions.values([get_typed_values(row, schema)]),
-    ).sql()
+    )
 
 
 def handle_create(statement, connection):
@@ -47,22 +51,32 @@ def handle_create(statement, connection):
     return table_name, schema
 
 
-def handle_copy(statement, stream, connection, table, schema):
+def handle_copy(
+    statement: sqlglot.Expression, stream, connection, table, schema, chunks: int
+):
     columns = [i.this for i in statement.this.expressions]
+    entries = []
     connection.sql("begin;")
 
-    # TODO: bulk insert!
-    for line in stream:
-        if line.rstrip() == r"\.":
-            break
+    line = next(stream).rstrip()
 
+    while line != r"\.":
         row = OrderedDict(zip(columns, line.rstrip().split("\t"), strict=False))
-        logging.debug(row)
+        values = get_typed_values(row, schema)
+        entries.append(values)
 
-        query = get_typed_insert_query(table=table, row=row, schema=schema)
+        if len(entries) == chunks:
+            query = get_typed_insert_query(table=table, values=entries, columns=columns)
+            logging.debug(query)
+            connection.sql(query)
+            entries = []
+
+        line = next(stream).rstrip()
+
+    if entries:
+        query = get_typed_insert_query(table=table, values=entries, columns=columns)
         logging.debug(query)
         connection.sql(query)
-
     connection.sql("commit;")
 
 
@@ -78,9 +92,8 @@ def sql_parsing_iterator(stream):
 
 
 def start() -> None:
-    # TODO: parametrize this!
-    connection = duckdb.connect("dump.db")
-
+    connection = duckdb.connect()
+    chunks = 100000
     TABLE_REGISTRY = {}
 
     with fileinput.input(encoding="utf-8") as f:
@@ -89,10 +102,12 @@ def start() -> None:
                 table, schema = handle_create(statement, connection)
                 TABLE_REGISTRY[table] = schema
             elif statement.key == "copy":
-                print(repr(statement.this.this.this.this))
                 table = statement.this.this.this.this
                 schema = TABLE_REGISTRY[table]
-                handle_copy(statement, f, connection, table, schema)
+                handle_copy(statement, f, connection, table, schema, chunks=chunks)
+
+    for table in TABLE_REGISTRY.keys():
+        connection.sql(f"from {table}").write_parquet(f"{table}.parquet")
 
     connection.close()
 

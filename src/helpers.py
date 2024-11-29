@@ -12,24 +12,15 @@ def get_sql_block(input):  # noqa: A002
             text_block = ""
 
 
-def safe_parse(text, dialect="postgres"):
-    try:
-        return sqlglot.parse_one(text, dialect=dialect)
-    except sqlglot.errors.ParseError as e:
-        print("errors", e.errors)
-
-    return None
-
-
 def remove_schema(expression):
     def transformer(node):
-        # print(repr(node))
         if node.key == "table":
             del node.args["db"]
         if (
             isinstance(node, sqlglot.expressions.DataType)
             and node.this == sqlglot.expressions.DataType.Type.USERDEFINED
         ):
+            # convert Postgres custom types to strings
             return sqlglot.expressions.DataType(
                 this=sqlglot.expressions.DataType.Type.VARCHAR
             )
@@ -37,8 +28,9 @@ def remove_schema(expression):
             isinstance(node, sqlglot.expressions.DataType)
             and node.this == sqlglot.expressions.DataType.Type.GEOMETRY
         ):
+            # Postgres dumps use hexewkb strings
             return sqlglot.expressions.DataType(
-                this=sqlglot.expressions.DataType.Type.GEOMETRY
+                this=sqlglot.expressions.DataType.Type.VARCHAR
             )
         return node
 
