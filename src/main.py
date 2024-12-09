@@ -182,7 +182,9 @@ def start(
         for table in TABLE_REGISTRY.keys():
             output_path = pathlib.Path(output) / f"{prefix}{table}"
             if output_type == "parquet":
-                connection.sql(f"from {table}").write_parquet(f"{output_path}.parquet")
+                connection.sql(f"from {table}").write_parquet(
+                    f"{output_path}.parquet", compression="zstd"
+                )
             else:
                 raise Exception("output format not supported")
 
