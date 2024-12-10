@@ -205,7 +205,7 @@ def start(
                     else:
                         logging.warning(
                             f"File {custom_sql_query_path} not found,"
-                            + "using default query {select_query}"
+                            + f"using default query {select_query}"
                         )
                 connection.sql(select_query).write_parquet(
                     f"{output_path}.parquet", compression="zstd"
