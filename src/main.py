@@ -196,8 +196,8 @@ def start(
             if output_type == "parquet":
                 select_query = f"from {table}"
                 if custom_sql_dir:
-                    custom_sql_query_path = (
-                        pathlib.Path(custom_sql_dir) / table + ".sql"
+                    custom_sql_query_path = pathlib.Path(custom_sql_dir) / (
+                        table + ".sql"
                     )
                     if custom_sql_query_path.exists():
                         with custom_sql_query_path.open() as f:
