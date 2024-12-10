@@ -137,7 +137,17 @@ def get_last_processed_line(connection):
 
 
 def start(
-    *args, chunks, db, output_type, files, drop_db, total, output, prefix, **kwargs
+    *args,
+    chunks,
+    db,
+    output_type,
+    files,
+    drop_db,
+    total,
+    output,
+    prefix,
+    custom_sql_dir,
+    **kwargs,
 ) -> None:
     if drop_db:
         pathlib.Path(db).unlink(missing_ok=True)
@@ -146,6 +156,8 @@ def start(
 
     with duckdb.connect(db) as connection:
         connection.sql("""
+            install spatial;
+            load spatial;
             create schema if not exists _stats;
             create table if not exists _stats.processed_line as (
                 select 0 as line_nr
@@ -182,7 +194,20 @@ def start(
         for table in TABLE_REGISTRY.keys():
             output_path = pathlib.Path(output) / f"{prefix}{table}"
             if output_type == "parquet":
-                connection.sql(f"from {table}").write_parquet(
+                select_query = f"from {table}"
+                if custom_sql_dir:
+                    custom_sql_query_path = (
+                        pathlib.Path(custom_sql_dir) / table + ".sql"
+                    )
+                    if custom_sql_query_path.exists():
+                        with custom_sql_query_path.open() as f:
+                            select_query = f.read()
+                    else:
+                        logging.warning(
+                            f"File {custom_sql_query_path} not found,"
+                            + "using default query {select_query}"
+                        )
+                connection.sql(select_query).write_parquet(
                     f"{output_path}.parquet", compression="zstd"
                 )
             else:
@@ -247,6 +272,12 @@ def cli():
         "--output-type",
         default="parquet",
         help="Format of the tables output - default: parquet",
+        required=False,
+    )
+    parser.add_argument(
+        "--custom-sql-dir",
+        default="",
+        help="Path to the the directory containing custom sql files for export",
         required=False,
     )
     args = parser.parse_args()
