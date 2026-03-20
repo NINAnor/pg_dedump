@@ -1,16 +1,19 @@
-import argparse
 import fileinput
 import logging
 import pathlib
 from collections import OrderedDict
+from typing import Annotated
 
 import duckdb
 import pyarrow as pa
 import sqlglot
 import sqlglot.expressions
+import typer
 from tqdm import tqdm
 
 from pg_dedump.helpers import get_sql_block, remove_schema
+
+app = typer.Typer()
 
 
 def convert(value: str, dtype: sqlglot.expressions.DataType.Type):
@@ -136,19 +139,47 @@ def get_last_processed_line(connection):
     return processed_line
 
 
+@app.command()
 def start(
-    *args,
-    chunks,
-    db,
-    output_type,
-    files,
-    drop_db,
-    total,
-    output,
-    prefix,
-    custom_sql_dir,
-    **kwargs,
+    files: Annotated[
+        list[str] | None,
+        typer.Argument(help="Files to read, if empty, stdin is used"),
+    ] = None,
+    verbose: Annotated[
+        bool, typer.Option("--verbose", "-v", help="Print debug output")
+    ] = False,
+    drop_db: Annotated[
+        bool, typer.Option("--drop-db", "-r", help="Delete the database if present")
+    ] = False,
+    chunks: Annotated[
+        int, typer.Option("--chunks", "-c", help="Chunk insert size")
+    ] = 10000,
+    total: Annotated[
+        int | None,
+        typer.Option("--total", "-t", help="Total lines - enables the progress bar"),
+    ] = None,
+    db: Annotated[
+        str, typer.Option("--db", "-d", help="Name of the dump database")
+    ] = "dump.ddb",
+    prefix: Annotated[
+        str, typer.Option("--prefix", "-p", help="Prefix to add to each table exported")
+    ] = "",
+    output: Annotated[str, typer.Option("--output", "-o", help="Output path")] = "",
+    output_type: Annotated[
+        str, typer.Option("--output-type", help="Format of the tables output")
+    ] = "parquet",
+    custom_sql_dir: Annotated[
+        str,
+        typer.Option(
+            "--custom-sql-dir",
+            help="Path to the directory containing custom sql files for export",
+        ),
+    ] = "",
 ) -> None:
+    """Extract tables from postgres dumps."""
+    logging.basicConfig(level=(logging.DEBUG if verbose else logging.INFO))
+    if files is None:
+        files = []
     if drop_db:
         pathlib.Path(db).unlink(missing_ok=True)
 
@@ -214,76 +245,5 @@ def start(
                 raise Exception("output format not supported")
 
 
-def cli():
-    parser = argparse.ArgumentParser(
-        prog="pg_dedump",
-        description="extract tables from postgres dumps",
-        add_help=True,
-    )
-    parser.add_argument(
-        "files",
-        metavar="FILE",
-        nargs="*",
-        help="files to read, if empty, stdin is used",
-    )
-    parser.add_argument(
-        "-v", "--verbose", action="store_true", help="Print debug output"
-    )
-    parser.add_argument(
-        "-r", "--drop-db", action="store_true", help="Delete the database if present"
-    )
-    parser.add_argument(
-        "-c",
-        "--chunks",
-        type=int,
-        default=10000,
-        help="Chunk insert size - default: 10000",
-        required=False,
-    )
-    parser.add_argument(
-        "-t",
-        "--total",
-        type=int,
-        help="Total lines - enables the progress bar",
-        required=False,
-    )
-    parser.add_argument(
-        "-d",
-        "--db",
-        default="dump.ddb",
-        help="Name of the dump database - by default uses dump.ddb",
-        required=False,
-    )
-    parser.add_argument(
-        "-p",
-        "--prefix",
-        default="",
-        help="Prefix to add to each table exported",
-        required=False,
-    )
-    parser.add_argument(
-        "-o",
-        "--output",
-        default="",
-        help="Output path",
-        required=False,
-    )
-    parser.add_argument(
-        "--output-type",
-        default="parquet",
-        help="Format of the tables output - default: parquet",
-        required=False,
-    )
-    parser.add_argument(
-        "--custom-sql-dir",
-        default="",
-        help="Path to the the directory containing custom sql files for export",
-        required=False,
-    )
-    args = parser.parse_args()
-    logging.basicConfig(level=(logging.DEBUG if args.verbose else logging.INFO))
-    start(**vars(args))
-
-
 if __name__ == "__main__":
-    cli()
+    app()

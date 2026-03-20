@@ -13,7 +13,8 @@ dependencies = [
   "sqlglot",
   "duckdb",
   "tqdm",
-  "pyarrow"
+  "pyarrow",
+  "typer"
 ]
 description = ""
 license = "GPL-3.0+"
@@ -24,7 +25,7 @@ version = "0.1.0"
 
 
 [project.scripts]
-pg_dedump = "pg_dedump.main:cli"
+pg_dedump = "pg_dedump.main:app"
 
 [dependency-groups]
 dev = [
