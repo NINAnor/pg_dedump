@@ -1,6 +1,11 @@
+
+[build-system]
+build-backend = "hatchling.build"
+requires = ["hatchling"]
+
 [project]
 authors = [
-  {name = "nicokant", email = "niccolo.cantu@nina.no"}
+  {name = "Niccolò Cantù", email = "niccolo.cantu@nina.no"}
 ]
 # PEP 621 project metadata
 # See https://www.python.org/dev/peps/pep-0621/
@@ -11,21 +16,20 @@ dependencies = [
   "pyarrow"
 ]
 description = ""
-license = {text = "GPL-3.0+"}
+license = "GPL-3.0+"
 name = "pg_dedump"
 readme = "README.md"
 requires-python = ">=3.10"
 version = "0.1.0"
 
-[project.optional-dependencies]
-tools = [
-  "pre-commit",
-  "pyyaml",
-  "GitPython"
-]
 
 [project.scripts]
-"pg_dedump" = "main:cli"
+pg_dedump = "pg_dedump.main:cli"
+
+[dependency-groups]
+dev = [
+  "deptry",
+]
 
 [tool.ruff]
 fix = true
@@ -33,3 +37,5 @@ fix = true
 [tool.ruff.lint]
 ignore = ["COM812"]
 select = ["E", "W", "I", "F", "UP", "S", "B", "A", "COM", "LOG", "PTH", "Q"]
+
+

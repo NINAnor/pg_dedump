@@ -10,7 +10,7 @@ import sqlglot
 import sqlglot.expressions
 from tqdm import tqdm
 
-from helpers import get_sql_block, remove_schema
+from pg_dedump.helpers import get_sql_block, remove_schema
 
 
 def convert(value: str, dtype: sqlglot.expressions.DataType.Type):
@@ -66,7 +66,7 @@ def process_chunk(db, chunk, table, line_nr):
 
 
 def handle_copy(
-    statement: sqlglot.Expression,
+    statement,
     stream,
     db,
     table,

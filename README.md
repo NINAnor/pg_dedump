@@ -17,7 +17,7 @@ The script then looks for the `COPY` statement,
 
 ## Install
 ```
-pip install .
+uv run pgdedump
 ```
 
 ## Usage
