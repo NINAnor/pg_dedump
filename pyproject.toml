@@ -14,7 +14,8 @@ dependencies = [
   "duckdb",
   "tqdm",
   "pyarrow",
-  "typer"
+  "typer",
+  "structlog>=25.5.0",
 ]
 description = ""
 license = "GPL-3.0+"

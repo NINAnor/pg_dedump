@@ -28,10 +28,10 @@ def remove_schema(expression):
             return sqlglot.expressions.DataType(
                 this=sqlglot.expressions.DataType.Type.VARCHAR
             )
-        if (
-            isinstance(node, sqlglot.expressions.DataType)
-            and node.this == sqlglot.expressions.DataType.Type.GEOMETRY
-        ):
+        if isinstance(node, sqlglot.expressions.DataType) and node.this in [
+            sqlglot.expressions.DataType.Type.GEOMETRY,
+            sqlglot.expressions.DataType.Type.INET,
+        ]:
             # Postgres dumps use hexewkb strings
             return sqlglot.expressions.DataType(
                 this=sqlglot.expressions.DataType.Type.VARCHAR

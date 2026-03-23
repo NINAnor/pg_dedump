@@ -8,12 +8,31 @@ import duckdb
 import pyarrow as pa
 import sqlglot
 import sqlglot.expressions
+import structlog
 import typer
 from tqdm import tqdm
 
-from pg_dedump.helpers import get_sql_block, remove_schema
+from .helpers import get_sql_block, remove_schema
 
 app = typer.Typer()
+
+
+def configure_logger(logging_level=logging.NOTSET):
+    structlog.configure(
+        processors=[
+            structlog.contextvars.merge_contextvars,
+            structlog.processors.add_log_level,
+            structlog.processors.StackInfoRenderer(),
+            structlog.dev.set_exc_info,
+            structlog.processors.TimeStamper(fmt="%Y-%m-%d %H:%M:%S", utc=False),
+            structlog.dev.ConsoleRenderer(),
+        ],
+        wrapper_class=structlog.make_filtering_bound_logger(logging_level),
+        context_class=dict,
+        logger_factory=structlog.PrintLoggerFactory(),
+        cache_logger_on_first_use=False,
+    )
+    return structlog.get_logger()
 
 
 def convert(value: str, dtype: sqlglot.expressions.DataType.Type):
@@ -42,30 +61,34 @@ def get_typed_insert_query(table, values, columns):
     )
 
 
-def handle_create(statement, db):
+def handle_create(statement, db, logger):
+    logger.debug("handling create", statement=statement)
     create_query = remove_schema(statement)
     table_name = create_query.this.this.this.this
     with duckdb.connect(db) as connection:
         connection.sql(create_query.sql(dialect="duckdb"))
 
-    logging.debug(repr(create_query))
+    logger.debug("using query", query=create_query)
 
     schema = OrderedDict(
         (exp.this.this, exp.kind) for exp in create_query.this.expressions
     )
-    logging.debug(schema)
+    logger.info("create table", name=table_name)
     return table_name, schema
 
 
-def process_chunk(db, chunk, table, line_nr):
-    logging.debug(f"processing chunk up to {line_nr}")
+def process_chunk(db, chunk, table, line_nr, logger):
+    logger.debug("processing chunk", line=line_nr, table=table, chunk_size=len(chunk))
 
-    arrow_table = pa.Table.from_pylist(chunk)
-    with duckdb.connect(db) as connection:
-        connection.register(f"_temp_{table}", arrow_table)
-        connection.sql(f"insert into {table} from _temp_{table}")
-        connection.unregister(f"_temp_{table}")
-        set_processed_line(connection, line_nr)
+    connection = duckdb.connect(db)
+    try:
+        arrow_table = connection.from_arrow(pa.Table.from_pylist(chunk))
+        logger.debug("created arrow table", table=arrow_table)
+        arrow_table.insert_into(table)
+        logger.debug("inserted", length=len(chunk))
+    except duckdb.BinderException as e:
+        logger.error("failed to insert chunk", error=e)
+    connection.close()
 
 
 def handle_copy(
@@ -77,66 +100,57 @@ def handle_copy(
     chunks: int,
     index: int,
     progress: tqdm,
+    logger,
 ):
     columns = [i.this for i in statement.this.expressions]
     entries = []
+
+    logger.info("copying", table=table)
 
     line_nr = index
 
     line = next(stream).rstrip()
 
-    with duckdb.connect(db) as connection:
-        last_line_nr = get_last_processed_line(connection)
-
     while line != r"\.":
-        if line_nr > last_line_nr:
-            logging.debug(f"adding {line_nr}")
-            values = get_typed_values(
-                OrderedDict(zip(columns, line.rstrip().split("\t"), strict=False)),
-                schema,
-            )
-            entries.append(values)
+        logger.debug(f"adding {line_nr}")
+        values = get_typed_values(
+            OrderedDict(zip(columns, line.rstrip().split("\t"), strict=False)),
+            schema,
+        )
+        entries.append(values)
 
-            if len(entries) == chunks:
-                process_chunk(db, chunk=entries, table=table, line_nr=line_nr)
-                entries = []
-        else:
-            logging.debug(f"skipping {line_nr}")
+        if len(entries) == chunks:
+            process_chunk(
+                db, chunk=entries, table=table, line_nr=line_nr, logger=logger
+            )
+            entries = []
 
         line = next(stream).rstrip()
         line_nr += 1
         progress.update(1)
 
     if len(entries) > 0:
-        process_chunk(db, chunk=entries, table=table, line_nr=line_nr)
+        process_chunk(db, chunk=entries, table=table, line_nr=line_nr, logger=logger)
 
     return line_nr
 
 
-def sql_parsing_iterator(stream, progress):
+def sql_parsing_iterator(stream, progress, logger):
     for _block, index in get_sql_block(stream, progress):
-        parsed = sqlglot.parse_one(_block)
+        try:
+            parsed = sqlglot.parse_one(_block)
 
-        if parsed.key in [
-            "create",
-            "copy",
-        ]:
-            yield parsed, index
+            logger.debug("parsed SQL block", block=_block, parsed=parsed)
 
-
-def set_processed_line(connection, line_nr):
-    connection.sql(
-        sqlglot.expressions.update("_stats.processed_line", {"line_nr": line_nr}).sql(
-            dialect="duckdb"
-        )
-    )
-
-
-def get_last_processed_line(connection):
-    (processed_line,) = connection.sql(
-        "select line_nr from _stats.processed_line limit 1"
-    ).fetchone()
-    return processed_line
+            if parsed.key in [
+                "copy",
+            ] or (parsed.key == "create" and parsed.kind == "TABLE"):
+                logger.debug("handling SQL block", parsed=parsed.key, block=_block)
+                yield parsed, index
+        except sqlglot.ParseError as e:
+            logger.warning("failed to parse SQL block", error=e)
+        except sqlglot.TokenError as e:
+            logger.warning("failed to tokenize SQL block", error=e)
 
 
 @app.command()
@@ -177,7 +191,7 @@ def start(
     ] = "",
 ) -> None:
     """Extract tables from postgres dumps."""
-    logging.basicConfig(level=(logging.DEBUG if verbose else logging.INFO))
+    logger = configure_logger(logging.DEBUG if verbose else logging.INFO)
     if files is None:
         files = []
     if drop_db:
@@ -185,15 +199,11 @@ def start(
 
     TABLE_REGISTRY = {}
 
-    with duckdb.connect(db) as connection:
-        connection.sql("""
-            install spatial;
-            load spatial;
-            create schema if not exists _stats;
-            create table if not exists _stats.processed_line as (
-                select 0 as line_nr
-            )
-        """)
+    connection = duckdb.connect(db)
+    connection.install_extension("spatial")
+    connection.load_extension("spatial")
+    connection.install_extension("inet")
+    connection.load_extension("inet")
 
     tqdm_params = {}
     if total:
@@ -203,12 +213,18 @@ def start(
         files=files if len(files) > 0 else ("-",), encoding="utf-8"
     ) as stream:
         progress = tqdm(unit=" lines", **tqdm_params)
-        for statement, index in sql_parsing_iterator(stream, progress):
+        for statement, index in sql_parsing_iterator(stream, progress, logger=logger):
             if statement.key == "create":
-                table, schema = handle_create(statement, db)
+                table, schema = handle_create(statement, db, logger=logger)
                 TABLE_REGISTRY[table] = schema
             elif statement.key == "copy":
                 table = statement.this.this.this.this
+                if table not in TABLE_REGISTRY:
+                    logger.warning(
+                        "table not found for copy statement, skipping",
+                        table=table,
+                    )
+                    continue
                 schema = TABLE_REGISTRY[table]
                 handle_copy(
                     statement,
@@ -219,27 +235,15 @@ def start(
                     chunks=chunks,
                     index=index,
                     progress=progress,
+                    logger=logger,
                 )
 
     with duckdb.connect(db) as connection:
         for table in TABLE_REGISTRY.keys():
             output_path = pathlib.Path(output) / f"{prefix}{table}"
             if output_type == "parquet":
-                select_query = f"from {table}"
-                if custom_sql_dir:
-                    custom_sql_query_path = pathlib.Path(custom_sql_dir) / (
-                        table + ".sql"
-                    )
-                    if custom_sql_query_path.exists():
-                        with custom_sql_query_path.open() as f:
-                            select_query = f.read()
-                    else:
-                        logging.warning(
-                            f"File {custom_sql_query_path} not found,"
-                            + f"using default query {select_query}"
-                        )
-                connection.sql(select_query).write_parquet(
-                    f"{output_path}.parquet", compression="zstd"
+                connection.table(table).write_parquet(
+                    f"{output_path}.parquet", compression="zstd", overwrite=True
                 )
             else:
                 raise Exception("output format not supported")
