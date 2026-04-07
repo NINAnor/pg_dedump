@@ -22,6 +22,7 @@ dependencies = [
   "structlog>=25.5.0"
 ]
 description = ""
+licence-files = ["LICENSE"]
 license = "GPL-3.0+"
 name = "pg_dedump"
 readme = "README.md"
