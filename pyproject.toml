@@ -1,7 +1,11 @@
-
 [build-system]
 build-backend = "hatchling.build"
 requires = ["hatchling"]
+
+[dependency-groups]
+dev = [
+  "deptry"
+]
 
 [project]
 authors = [
@@ -15,7 +19,7 @@ dependencies = [
   "tqdm",
   "pyarrow",
   "typer",
-  "structlog>=25.5.0",
+  "structlog>=25.5.0"
 ]
 description = ""
 license = "GPL-3.0+"
@@ -24,14 +28,8 @@ readme = "README.md"
 requires-python = ">=3.10"
 version = "0.1.0"
 
-
 [project.scripts]
 pg_dedump = "pg_dedump.main:app"
-
-[dependency-groups]
-dev = [
-  "deptry",
-]
 
 [tool.ruff]
 fix = true
@@ -39,5 +37,3 @@ fix = true
 [tool.ruff.lint]
 ignore = ["COM812"]
 select = ["E", "W", "I", "F", "UP", "S", "B", "A", "COM", "LOG", "PTH", "Q"]
-
-
