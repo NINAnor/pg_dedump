@@ -16,8 +16,9 @@ The script then looks for the `COPY` statement,
 5. export the table as parquet file
 
 ## Install
+
 ```
-uv run pgdedump
+uv tool install https://github.com/NINAnor/pg_dedump.git 
 ```
 
 ## Usage
